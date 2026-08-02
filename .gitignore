@@ -1,0 +1,19 @@
+# Environment variables & API keys (CRITICAL)
+.env
+*.env
+
+# Python Virtual Environment
+venv/
+env/
+ENV/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Vector Store local files (too large for Git)
+chroma_db/
+
+# OS Specific files
+.DS_Store
+Thumbs.db
