@@ -1,60 +1,82 @@
-# api.py
+import os
+import asyncio
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import uvicorn
-import json
-from graph_rag import query_graph
+from dotenv import load_dotenv
+
+# Import both the non-streaming and streaming functions from your engine
+from guardrails import check_guardrail
+from rag_engine import ask_farmer_bot, ask_farmer_bot_stream
+
+load_dotenv()
 
 app = FastAPI(
-    title="TN Farmers Welfare Graph AI API",
-    description="Backend API powered by Neo4j Knowledge Graph & LangChain",
-    version="2.0.0"
+    title="Tamil Nadu Farmers Welfare Scheme AI API",
+    description="Backend API powered by LangChain, OpenAI, and ChromaDB.",
+    version="1.0"
 )
 
-# Enable CORS for Streamlit Frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class ChatRequest(BaseModel):
+# Request Data Model
+class QueryRequest(BaseModel):
     query: str
-    session_id: str = "default"
-    detail_level: str = "Short"
+    session_id: str = "default_session"
+    detail_level: str = "Short"  # Options: Short, Medium, Long
+    
+# Response Data Model for non-streaming endpoint
+class QueryResponse(BaseModel):
+    answer: str
+    status: str
 
 @app.get("/")
 def root():
-    return {"status": "Online", "engine": "Neo4j Knowledge Graph RAG"}
+    return {"message": "TN Farmers Welfare AI Bot API is running!"}
 
-@app.post("/chat")
-def chat_endpoint(request: ChatRequest):
-    """Standard JSON response endpoint."""
-    try:
-        response = query_graph(request.query, request.detail_level)
-        return {"response": response, "session_id": request.session_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ==========================================
+# 1. Non-Streaming Endpoint (Returns Full JSON)
+# ==========================================
+@app.post("/chat", response_model=QueryResponse)
+async def chat_endpoint(request: QueryRequest):
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    
+    # Process query through RAG engine (includes internal guardrail check)
+    answer = ask_farmer_bot(
+        query=request.query, 
+        session_id=request.session_id,
+        detail_level=request.detail_level
+    )
+    
+    return QueryResponse(answer=answer, status="success")
 
+# ==========================================
+# 2. Streaming Endpoint (Token-by-Token)
+# ==========================================
 @app.post("/chat/stream")
-def chat_stream_endpoint(request: ChatRequest):
-    """Streaming endpoint for Streamlit UI."""
-    def event_stream():
-        try:
-            full_response = query_graph(request.query, request.detail_level)
-            # Stream words chunk-by-chunk for smooth typing effect in UI
-            words = full_response.split(" ")
-            for i, word in enumerate(words):
-                chunk = word + (" " if i < len(words) - 1 else "")
-                yield chunk
-        except Exception as e:
-            yield f"⚠️ API Error: {str(e)}"
+async def chat_stream_endpoint(request: QueryRequest):
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
-    return StreamingResponse(event_stream(), media_type="text/plain")
+    # A. Guardrail check
+    is_allowed, rejection_msg = check_guardrail(request.query)
+    if not is_allowed:
+        async def generate_rejection():
+            yield rejection_msg
+        return StreamingResponse(generate_rejection(), media_type="text/plain")
+
+    # B. Generator function streaming chunks from RAG engine
+    async def event_generator():
+        for chunk in ask_farmer_bot_stream(
+            query=request.query,
+            session_id=request.session_id,
+            detail_level=request.detail_level
+        ):
+            yield chunk
+            await asyncio.sleep(0.01)
+
+    return StreamingResponse(event_generator(), media_type="text/plain")
 
 if __name__ == "__main__":
+    import uvicorn
+    # Start server on http://localhost:8000
     uvicorn.run("api:app", host="127.0.0.1", port=8000, reload=True)
